@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>tr('Image Ranker')</title>
+<link rel="stylesheet" href="style.css" />
+<link rel="icon" type="image/svg+xml" href="resources/icon.svg" />
+<meta name="x-icue-property" content="viewMode" data-label="tr('View mode')" data-type="combobox" data-default="'compare'" data-values="[{'key':'compare','value':tr('Compare')},{'key':'top5','value':tr('Top 5')}]" />
+<meta name="x-icue-property" content="imageFit" data-label="tr('Image fit')" data-type="combobox" data-default="'contain'" data-values="[{'key':'contain','value':tr('Contain')},{'key':'cover','value':tr('Cover')}]" />
+<meta name="x-icue-property" content="showNames" data-label="tr('Show image names')" data-type="switch" data-default="false" />
+<meta name="x-icue-property" content="buttonSize" data-label="tr('Button size')" data-type="slider" data-default="72" data-min="44" data-max="144" data-step="4" data-unit-label="'px'" />
+<meta name="x-icue-property" content="showText" data-label="tr('Show text')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="showTitle" data-label="tr('Show title')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="showStatus" data-label="tr('Show status text')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="showRankings" data-label="tr('Show Top 5 captions')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="showButtonLabels" data-label="tr('Show button labels')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="playVideos" data-label="tr('Play videos (always muted)')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="loopVideos" data-label="tr('Loop videos')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="manualHide" data-label="tr('Hide images')" data-type="switch" data-default="false" />
+<meta name="x-icue-property" content="scheduleEnabled" data-label="tr('Enable visibility schedule')" data-type="switch" data-default="false" />
+<meta name="x-icue-property" content="startTime" data-label="tr('Start time HH:MM')" data-type="textfield" data-default="'08:00'" />
+<meta name="x-icue-property" content="endTime" data-label="tr('End time HH:MM')" data-type="textfield" data-default="'15:00'" />
+<meta name="x-icue-property" content="monday" data-label="tr('Monday')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="tuesday" data-label="tr('Tuesday')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="wednesday" data-label="tr('Wednesday')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="thursday" data-label="tr('Thursday')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="friday" data-label="tr('Friday')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="saturday" data-label="tr('Saturday')" data-type="switch" data-default="false" />
+<meta name="x-icue-property" content="sunday" data-label="tr('Sunday')" data-type="switch" data-default="false" />
+<meta name="x-icue-property" content="endpoint" data-label="tr('Local ranker endpoint')" data-type="textfield" data-default="'http://127.0.0.1:47831'" />
+<meta name="x-icue-property" content="apiToken" data-label="tr('Private local API token')" data-type="textfield" data-default="''" />
+<meta name="x-icue-property" content="textColor" data-label="tr('Text color')" data-type="color" data-default="'#eef3f8'" />
+<meta name="x-icue-property" content="accentColor" data-label="tr('Accent color')" data-type="color" data-default="'#74d6e5'" />
+<meta name="x-icue-property" content="backgroundColor" data-label="tr('Background color')" data-type="color" data-default="'#111824'" />
+<meta name="x-icue-property" content="transparency" data-label="tr('Background opacity')" data-type="slider" data-default="100" data-min="0" data-max="100" data-step="1" data-unit-label="'%'" />
+<script type="application/json" id="x-icue-groups">[{"title": "tr('Comparison')", "properties": ["viewMode", "imageFit", "manualHide"]}, {"title": "tr('Video playback')", "properties": ["playVideos", "loopVideos"]}, {"title": "tr('Text and controls')", "properties": ["showText", "showTitle", "showStatus", "showRankings", "showButtonLabels", "showNames", "buttonSize"]}, {"title": "tr('Visibility schedule')", "properties": ["scheduleEnabled", "startTime", "endTime", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]}, {"title": "tr('Local connection')", "properties": ["endpoint", "apiToken"]}, {"title": "tr('Personalization')", "properties": ["textColor", "accentColor", "backgroundColor", "transparency"]}]</script>
+</head>
+<body>
+<div id="background"></div>
+<main id="root" data-testid="root">
+<header><div><strong data-tr="Image Ranker">Image Ranker</strong><span id="stats"></span></div><nav><button id="view" data-testid="top5-toggle" aria-label="Top 5"><svg hidden="hidden" aria-hidden="true" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="button-label">Top 5</span></button><button id="hide" data-testid="manual-hide" aria-label="Hide"><svg hidden="hidden" aria-hidden="true" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><span class="button-label">Hide</span></button></nav></header>
+<p id="status" data-testid="status" role="status" aria-live="polite"></p>
+<section id="compare" data-testid="compare-cards" aria-label="Compare images"></section>
+<section id="top5" data-testid="top5" hidden></section>
+</main>
+<script src="defaults.js"></script>
+<script src="runtime.js"></script>
+<script>
+icueEvents = { onICUEInitialized: function () { ImageRanker.init(); }, onDataUpdated: function () { ImageRanker.update(); } };
+if (typeof iCUE_initialized === 'undefined' || iCUE_initialized) ImageRanker.init();
+</script>
+</body>
+</html>

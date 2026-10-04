@@ -1,0 +1,6 @@
+# Local companion dependencies. Install into this project's .venv, not global Python.
+cffi==2.1.1
+Pillow==12.3.0
+pycparser==3.0
+pyvips==3.2.0
+pyvips-binary==8.18.7

@@ -1,0 +1,18 @@
+{
+  "name": "xeneon-image-ranker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Native iCUE image ranking widget with read-only local archive companion",
+  "scripts": {
+    "test": "node tools/python.cjs -B tools/setup.py && node tools/python.cjs -B tools/setup.py --fixtures-only && node tools/python.cjs -B -W error::ResourceWarning -m unittest discover -s tests -p \"test_*.py\" && node --test tests/widget*.test.cjs",
+    "setup": "node tools/python.cjs -B tools/setup.py",
+    "fixtures": "node tools/python.cjs -B tools/setup.py --fixtures-only",
+    "validate": "node tools/build-widget.cjs --validate",
+    "package": "node tools/build-widget.cjs",
+    "start": "node tools/python.cjs -B server.py --config config.json"
+  },
+  "devDependencies": {
+    "icuewidget-cli": "^0.4.47",
+    "playwright": "^1.63.0"
+  }
+}

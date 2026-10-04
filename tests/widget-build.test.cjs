@@ -1,0 +1,28 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
+const vm=require('node:vm');
+const project=path.resolve(__dirname,'..');
+const helper=path.join(project,'tools/build-widget.cjs');
+test('private staging injects local credentials without changing public widget sources',t=>{
+ assert.ok(fs.existsSync(helper),'private build helper must exist');
+ const temp=fs.mkdtempSync(path.join(process.env.TMPDIR||os.tmpdir(),'ranker-build-'));
+ t.after(()=>fs.rmSync(temp,{recursive:true,force:true}));
+ fs.mkdirSync(path.join(temp,'archive'));
+ fs.cpSync(path.join(project,'widget'),path.join(temp,'widget'),{recursive:true,filter:p=>path.basename(p)!=='defaults.js'});
+ const token='build-test-only-private-token-0123456789abcdef';
+ fs.writeFileSync(path.join(temp,'config.json'),JSON.stringify({archive_root:path.join(temp,'archive'),port:47900,api_token:token}));
+ const before=fs.readFileSync(path.join(temp,'widget/index.html'),'utf8');
+ const stage=require(helper).stageWidget(temp);
+ const html=fs.readFileSync(path.join(stage,'index.html'),'utf8');
+ assert.equal(html.includes(`data-default="'${token}'"`),true,'private metadata matches local API');
+ assert.ok(html.includes("data-default=\"'http://127.0.0.1:47900'\""));
+ const context={window:{}};vm.runInNewContext(fs.readFileSync(path.join(stage,'defaults.js'),'utf8'),context);
+ assert.equal(context.window.ImageRankerDefaults.apiToken===token,true);
+ assert.equal(context.window.ImageRankerDefaults.endpoint,'http://127.0.0.1:47900');
+ assert.equal(fs.readFileSync(path.join(temp,'widget/index.html'),'utf8'),before,'public template remains unchanged');
+ assert.equal(before.includes(token),false);
+ assert.equal(fs.existsSync(path.join(stage,'defaults.example.js')),false);
+});

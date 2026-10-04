@@ -1,0 +1,104 @@
+# Private local configuration and credentials
+/config.json
+/config.local.*
+/widget/defaults.js
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+
+# Rankings, watcher state, exports, backups and local reports
+/data/
+/.r34-watcher/
+/verification/
+/exports/
+/backups/
+/logs/
+*rankings*.json
+*rankings*.csv
+*votes*.json
+*votes*.csv
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.bak
+*.backup
+*.log
+
+# Installed/downloaded binary dependencies and archived local backups
+*.exe
+*.dll
+*.pyd
+*.whl
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.tgz
+
+# Installed dependencies, environments and caches (recreate locally)
+node_modules/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.npm/
+.cache/
+
+# Private generated widget packages embed the local API key
+/build/
+/dist/
+*.icuewidget
+
+# Archive media must not enter the public repo accidentally
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.bmp
+*.avif
+*.tif
+*.tiff
+*.mp4
+*.webm
+*.m4v
+*.mov
+*.mkv
+*.part
+# Deliberately authored public preview assets may be committed
+!widget/resources/*.png
+# Test media is generated with `npm run fixtures`, not downloaded media
+/tests/fixtures/*
+!/tests/fixtures/README.md
+
+# Agent implementation notes and local scratch files
+/CONTRACT.md
+/MEDIA-CONTRACT.md
+# Retain the original machine-specific launcher locally; publish portable start.cmd instead
+/Start Image Ranker.cmd
+/.test-tmp/
+/tmp/
+/temp/
+*.tmp
+*.temp
+
+# Editor/OS-specific files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

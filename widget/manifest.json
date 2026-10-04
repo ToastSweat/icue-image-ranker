@@ -1,0 +1,22 @@
+{
+  "author": "Pada1",
+  "id": "com.pada1.image-ranker",
+  "name": "Image Ranker",
+  "description": "Private local pairwise image ranking with scheduled visibility.",
+  "version": "1.2.0",
+  "preview_icon": "resources/icon.svg",
+  "min_app_version": "5.47",
+  "min_framework_version": "1.4.0",
+  "os": [
+    {
+      "platform": "windows"
+    }
+  ],
+  "supported_devices": [
+    {
+      "type": "dashboard_lcd"
+    }
+  ],
+  "interactive": true,
+  "required_plugins": []
+}
