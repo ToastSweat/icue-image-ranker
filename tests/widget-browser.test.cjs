@@ -23,10 +23,157 @@ async function setup(t,hook=async()=>{},before=async()=>{}){
   else await route.fulfill({json:initial});
  });
  await before(page);
- await page.goto('http://127.0.0.1:'+server.address().port);
+ await page.goto('http://127.0.0.1:'+server.address().port,{waitUntil:'domcontentloaded'});
  return {page,calls};
 }
 async function ready(page){await page.waitForSelector('#compare button:not([disabled])');}
+test('Retry and Skip remain available even when neither media has loaded or errored',async t=>{
+ const {page,calls}=await setup(t,async(route,req)=>{
+  if(req.url().includes('/api/image/')){await new Promise(()=>{});return true;}
+ },p=>p.clock.install({time:new Date(2026,9,5,12,0,0)}));
+ await page.waitForSelector('#compare img');
+ assert.equal(await page.getByTestId('retry-pair').isVisible(),true);
+ assert.equal(await page.getByTestId('skip-pair').isVisible(),true);
+ assert.equal(await page.getByTestId('skip-pair').isEnabled(),true);
+ assert.equal(await page.locator('#compare button:disabled').count(),2);
+ await page.clock.runFor(16000);
+ assert.match(await page.getByTestId('status').textContent(),/Image unavailable/);
+ assert.equal(await page.getByTestId('skip-pair').isEnabled(),true);
+ assert.equal(calls.filter(c=>c.method==='POST').length,0);
+});
+
+test('manual skip works before a stalled image fires an error and never records a vote',async t=>{
+ const next={...initial,last_skip:{pair_id:'p1'},pair:{id:'p2',left:image('third'),right:image('fourth')}};
+ const {page,calls}=await setup(t,async(route,req)=>{
+  if(req.method()==='POST'){await route.fulfill({json:next});return true;}
+  if(req.url().includes('/api/image/left')||req.url().includes('/api/image/right')){await new Promise(()=>{});return true;}
+ });
+ await page.waitForSelector('#compare img');await page.getByTestId('skip-pair').click();
+ await page.waitForFunction(()=>document.querySelector('#compare').dataset.pairId==='p2');await ready(page);
+ assert.deepEqual(calls.find(c=>c.method==='POST').body,{pair_id:'p1',failed_ids:[]});
+ assert.equal(calls.some(c=>c.url.includes('/api/vote')),false);
+});
+
+test('a stalled save request times out and restores recovery buttons instead of locking forever',async t=>{
+ const {page}=await setup(t,async(route,req)=>{if(req.method()==='POST'){await new Promise(()=>{});return true;}},p=>p.clock.install({time:new Date(2026,9,5,12,0,0)}));
+ await ready(page);await page.getByTestId('left-choice').click();
+ assert.equal(await page.getByTestId('skip-pair').isDisabled(),true);
+ await page.clock.runFor(16000);
+ await page.waitForFunction(()=>!document.querySelector('#skip').disabled,{},{timeout:1500});
+ assert.equal(await page.getByTestId('retry-pair').isEnabled(),true);
+ assert.equal(await page.getByTestId('compare-cards').getAttribute('data-pair-id'),'p1');
+});
+
+test('failed preview exposes retry which reloads the same pair without casting a vote',async t=>{
+ let attempts=0;
+ const {page,calls}=await setup(t,async(route,req)=>{
+  if(req.url().includes('/api/image/right')&&++attempts===1){await route.fulfill({status:415,json:{error:'Unsupported fixture format'}});return true;}
+ });
+ await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Image unavailable'));
+ assert.equal(await page.getByTestId('retry-pair').isVisible(),true);
+ assert.equal(await page.getByTestId('skip-pair').isVisible(),true);
+ assert.equal(await page.locator('#compare button:disabled').count(),2);
+ await page.getByTestId('retry-pair').click();await ready(page);
+ assert.equal(await page.getByTestId('compare-cards').getAttribute('data-pair-id'),'p1');
+ assert.equal(await page.getByTestId('recovery').isVisible(),true);
+ assert.equal(calls.filter(c=>c.method==='POST').length,0);
+});
+
+test('explicit skip commits once and advances only after the server response',async t=>{
+ let finish;
+ const next={...initial,last_skip:{pair_id:'p1',excluded_ids:['right']},pair_status:{id:'p1',status:'skipped'},pair:{id:'p2',left:image('third'),right:image('left')}};
+ const {page,calls}=await setup(t,async(route,req)=>{
+  if(req.method()==='POST'){await new Promise(resolve=>finish=resolve);await route.fulfill({json:next});return true;}
+  if(req.url().includes('/api/image/right')){await route.fulfill({status:415,json:{error:'Unreadable fixture'}});return true;}
+ });
+ await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Image unavailable'));
+ await page.evaluate(()=>{document.querySelector('#skip').click();document.querySelector('#skip').click();});
+ await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Skipping'),{},{timeout:1500});
+ assert.equal(await page.getByTestId('compare-cards').getAttribute('data-pair-id'),'p1');
+ assert.equal(await page.getByTestId('skip-pair').isDisabled(),true);
+ await page.waitForTimeout(30);
+ assert.deepEqual(calls.find(c=>c.method==='POST').body,{pair_id:'p1',failed_ids:['right']});
+ finish();await page.waitForFunction(()=>document.querySelector('#compare').dataset.pairId==='p2');await ready(page);
+ assert.equal(calls.filter(c=>c.method==='POST').length,1);
+ assert.equal(calls.some(c=>c.url.includes('/api/vote')),false);
+});
+
+test('lost skip response reconciles a durable receipt instead of trapping the old pair',async t=>{
+ let committed=false;
+ const next={...initial,last_skip:{pair_id:'p1'},pair_status:{id:'p1',status:'skipped'},pair:{id:'p2',left:image('third'),right:image('left')}};
+ const {page,calls}=await setup(t,async(route,req)=>{
+  if(req.method()==='POST'){committed=true;await route.abort('failed');return true;}
+  if(req.url().includes('/api/state')&&committed){await route.fulfill({json:next});return true;}
+  if(req.url().includes('/api/image/right')){await route.fulfill({status:415,json:{error:'Unreadable fixture'}});return true;}
+ });
+ await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Image unavailable'));
+ await page.getByTestId('skip-pair').click();
+ await page.waitForFunction(()=>document.querySelector('#compare').dataset.pairId==='p2',{},{timeout:1500});
+ await ready(page);assert.equal(calls.filter(c=>c.method==='POST').length,1);
+});
+
+test('polling follows a pair completed in another client only with its exact durable status',async t=>{
+ let reads=0;
+ const next={...initial,last_vote:{pair_id:'newer-pair',winner:'left'},pair_status:{id:'p1',status:'voted'},pair:{id:'p2',left:image('third'),right:image('left')}};
+ const {page,calls}=await setup(t,async(route,req)=>{if(req.url().includes('/api/state')){await route.fulfill({json:++reads===1?initial:next});return true;}});
+ await ready(page);await page.evaluate(()=>ImageRanker.poll());
+ assert.equal(await page.getByTestId('compare-cards').getAttribute('data-pair-id'),'p2');
+ assert.equal(new URL(calls.filter(c=>c.url.includes('/api/state')).at(-1).url).searchParams.get('pair_id'),'p1');
+ assert.equal(calls.filter(c=>c.method==='POST').length,0);
+});
+
+test('Top 100 paginates five favorites at a time without changing the pending pair',async t=>{
+ const top=Array.from({length:100},(_,i)=>({...image('rank'+i),rating:2000-i}));
+ const {page,calls}=await setup(t,async(route,req)=>{if(req.url().includes('/api/state')){await route.fulfill({json:{...initial,top,stats:{images:100,rated:100,votes:100,scanning:false}}});return true;}});
+ await ready(page);await page.getByTestId('top5-toggle').click();await page.waitForSelector('#top5 img');
+ assert.equal(await page.getByTestId('next-page').isVisible(),true);
+ assert.equal(await page.locator('#top5 article').count(),5);
+ assert.match(await page.getByTestId('page-status').textContent(),/1.*5.*100/);
+ assert.equal(calls.filter(c=>c.url.includes('/api/image/rank')).length,5,'only current favorites page loads');
+ for(let i=0;i<19;i++)await page.getByTestId('next-page').click();
+ assert.match(await page.getByTestId('page-status').textContent(),/96.*100/);
+ assert.match(await page.locator('#top5 p').last().textContent(),/#100/);
+ assert.equal(await page.getByTestId('next-page').isDisabled(),true);
+ await page.getByTestId('previous-page').click();assert.match(await page.locator('#top5 p').first().textContent(),/#91/);
+ await page.getByTestId('top5-toggle').click();await ready(page);
+ assert.equal(await page.getByTestId('compare-cards').getAttribute('data-pair-id'),'p1');
+ assert.equal(calls.filter(c=>c.method==='POST').length,0);
+});
+
+test('recovery and Top 100 paging controls fit every EDGE slot with text and size extremes',async t=>{
+ const top=Array.from({length:100},(_,i)=>image('rank'+i));
+ const {page}=await setup(t,async(route,req)=>{
+  if(req.url().includes('/api/state')){await route.fulfill({json:{...initial,top}});return true;}
+  if(req.url().includes('/api/image/right')){await route.fulfill({status:415,json:{error:'Unreadable fixture'}});return true;}
+ });
+ for(const [width,height] of [[840,344],[840,696],[1688,696],[2536,696],[696,416],[696,840],[696,1688],[696,2536]]){
+  await page.setViewportSize({width,height});
+  for(const size of [44,144])for(const text of [true,false])for(const mode of ['compare','top5']){
+   await page.evaluate(({size,text,mode})=>{window.buttonSize=size;window.showText=text;window.showNames=true;window.viewMode=mode;icueEvents.onDataUpdated();},{size,text,mode});
+   if(mode==='compare')await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('Image unavailable'));
+   const selector='nav button,'+(mode==='compare'?'#compare button,#recovery button':'#top5 article,#pager button');
+   const boxes=await page.locator(selector).evaluateAll(nodes=>nodes.map(e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height,right:r.right,bottom:r.bottom};}));
+   for(const b of boxes){assert.ok(b.w>=44&&b.h>=44,`${width}x${height} ${mode} ${size} tap target`);assert.ok(b.x>=0&&b.y>=0&&b.right<=width+.1&&b.bottom<=height+.1,`${width}x${height} ${mode} ${size} bounds`);}
+   if(!text){assert.equal(await page.locator(mode==='compare'?'#retry svg':'#next svg').isVisible(),true);assert.equal(await page.locator(mode==='compare'?'#retry .button-label':'#next .button-label').isVisible(),false);}
+   if(process.env.WIDGET_SCREENSHOT_DIR&&width===840&&height===344&&size===144&&text)await page.screenshot({path:path.join(process.env.WIDGET_SCREENSHOT_DIR,`v1.3-${mode}-compact-fixtures.png`)});
+  }
+ }
+ await page.evaluate(()=>{window.manualHide=true;icueEvents.onDataUpdated();});
+ assert.equal(await page.getByTestId('recovery').isVisible(),false);assert.equal(await page.getByTestId('favorites-pager').isVisible(),false);assert.equal(await page.locator('img,video').count(),0);
+});
+
+test('peer completion sync does not restart unchanged favorites playback nodes',async t=>{
+ let reads=0;
+ const next={...initial,pair_status:{id:'p1',status:'voted'},pair:{id:'p2',left:image('third'),right:image('left')}};
+ const {page}=await setup(t,async(route,req)=>{if(req.url().includes('/api/state')){await route.fulfill({json:++reads===1?initial:next});return true;}});
+ await ready(page);await page.getByTestId('top5-toggle').click();await page.waitForSelector('#top5 img');
+ await page.evaluate(()=>window.savedFavorite=document.querySelector('#top5 img'));
+ await page.evaluate(()=>ImageRanker.poll());
+ assert.equal(await page.evaluate(()=>savedFavorite===document.querySelector('#top5 img')),true);
+ await page.getByTestId('top5-toggle').click();await ready(page);
+ assert.equal(await page.getByTestId('compare-cards').getAttribute('data-pair-id'),'p2');
+});
+
 test('video comparison plays silently and retains the same video until an actual vote',async t=>{
  const video={...image('left'),kind:'video',url:'/api/video/left',poster_url:'/api/image/left'};
  const mixed={...initial,pair:{...initial.pair,left:video}};
@@ -64,7 +211,7 @@ test('unsupported video falls back to its real poster without skipping the compa
  assert.equal(calls.filter(c=>c.method==='POST').length,0);
 });
 
-test('Top 5 videos fit every slot and scheduled hiding unloads all playback',async t=>{
+test('Top 100 videos fit every slot and scheduled hiding unloads all playback',async t=>{
  const top=Array.from({length:5},(_,i)=>({...image('rank'+i),kind:'video',url:'/api/video/rank'+i,poster_url:'/api/image/rank'+i}));
  const {page}=await setup(t,async(route,req)=>{if(req.url().includes('/api/state')){await route.fulfill({json:{...initial,top}});return true;}});await ready(page);
  await page.getByTestId('top5-toggle').click();
@@ -164,7 +311,7 @@ test('native presentation settings update existing images without pair replaceme
 });
 test('native Promise translations localize controls and accessible choices',async t=>{
  const {page}=await setup(t,undefined,p=>p.addInitScript(()=>{window.tr=key=>Promise.resolve('T:'+key);}));
- await ready(page);await page.waitForFunction(()=>document.querySelector('#view').textContent==='T:Top 5');
+ await ready(page);await page.waitForFunction(()=>document.querySelector('#view').textContent==='T:Top 100');
  assert.equal(await page.getByTestId('left-choice').getAttribute('aria-label'),'T:Choose left image');
  assert.equal(await page.getByTestId('status').textContent(),'T:Tap the image you prefer');
 });
@@ -231,7 +378,7 @@ test('delayed native initialization applies settings even after browser fallback
 test('late native translations update existing accessible labels without replacing images',async t=>{
  const {page}=await setup(t,undefined,p=>p.addInitScript(()=>{window.tr=key=>new Promise(r=>(window.translationResolvers??=[]).push(()=>r('T:'+key)));}));
  await ready(page);await page.evaluate(()=>{window.saved=document.querySelector('#compare img');window.translationResolvers.forEach(r=>r());});
- await page.waitForFunction(()=>document.querySelector('#view').textContent==='T:Top 5');
+ await page.waitForFunction(()=>document.querySelector('#view').textContent==='T:Top 100');
  assert.equal(await page.getByTestId('left-choice').getAttribute('aria-label'),'T:Choose left image');
  assert.equal(await page.evaluate(()=>window.saved===document.querySelector('#compare img')),true);
 });
@@ -251,7 +398,7 @@ test('text controls remove visible copy without replacing pending images or hidi
  assert.equal(await page.locator('#compare .image-name').first().isVisible(),false);
  assert.equal(await page.locator('#view .button-label').isVisible(),false);
  assert.equal(await page.getByTestId('top5-toggle').isVisible(),true);
- assert.equal(await page.getByTestId('top5-toggle').getAttribute('aria-label'),'Top 5');
+ assert.equal(await page.getByTestId('top5-toggle').getAttribute('aria-label'),'Top 100');
  assert.equal(await page.evaluate(()=>window.savedImage===document.querySelector('#compare img')),true);
  await page.getByTestId('top5-toggle').click();await page.waitForSelector('#top5 img');
  assert.equal(await page.locator('#top5 p').first().isVisible(),false);
@@ -352,7 +499,7 @@ test('native host waits for initialization so persisted privacy settings cannot 
 test('comparison renders two loaded image vote targets with local assets',async t=>{
  const {page}=await setup(t);await ready(page);
  assert.equal(await page.locator('#compare button img').count(),2);
- assert.equal(await page.locator('#view').textContent(),'Top 5');
+ assert.equal(await page.locator('#view').textContent(),'Top 100');
 });
 test('pending votes disable both choices; duplicate tap is ignored and failed vote retains pair',async t=>{
  let finish;let votes=0;

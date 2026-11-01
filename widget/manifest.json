@@ -1,9 +1,9 @@
 {
   "author": "Pada1",
   "id": "com.pada1.image-ranker",
-  "name": "Image Ranker",
+  "name": "Image Ranker 1.5",
   "description": "Private local pairwise image ranking with scheduled visibility.",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "preview_icon": "resources/icon.svg",
   "min_app_version": "5.47",
   "min_framework_version": "1.4.0",

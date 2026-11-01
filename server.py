@@ -56,6 +56,12 @@ class APIError(Exception):
         self.status = status
 
 
+# Correlated primary-key probes preserve each bounded catalog index's ordering.
+ELIGIBLE_MEDIA = '''active=1 AND NOT EXISTS (
+    SELECT 1 FROM media_failures WHERE image_id=images.id
+    AND size=images.size AND mtime=images.mtime)'''
+
+
 def validate_config(config):
     if not isinstance(config, dict):
         raise ValueError('Configuration must be an object.')
@@ -70,20 +76,24 @@ def validate_config(config):
     if result.get('host', '127.0.0.1') != '127.0.0.1':
         raise ValueError('Only 127.0.0.1 binding is permitted.')
     defaults = {'port':47831, 'settle_seconds':120, 'scan_interval_seconds':3600,
-                'exploration_fraction':.65, 'thumbnail_max_pixels':1200,
+                'exploration_fraction':.9, 'pair_repeat_cooldown':500,
+                'image_repeat_cooldown':12, 'refinement_pool_size':100, 'thumbnail_max_pixels':1200,
                 'max_source_pixels':500_000_000, 'max_source_bytes':256 * 1024 * 1024,
                 'max_video_bytes':8 * 1024**3}
     for key, default in defaults.items():
         result.setdefault(key, default)
     limits = {'port':(1,65535), 'settle_seconds':(0,86400), 'scan_interval_seconds':(1,604800),
-              'exploration_fraction':(0,1), 'thumbnail_max_pixels':(32,4096),
+              'exploration_fraction':(0,1), 'pair_repeat_cooldown':(0,10000),
+              'image_repeat_cooldown':(0,1000), 'refinement_pool_size':(2,1000),
+              'thumbnail_max_pixels':(32,4096),
               'max_source_pixels':(1,1_000_000_000), 'max_source_bytes':(1,1024 * 1024 * 1024),
               'max_video_bytes':(1,1024**4)}
     for key, (minimum, maximum) in limits.items():
         value = result[key]
         if isinstance(value, bool) or not isinstance(value, (int,float)) or not minimum <= value <= maximum:
             raise ValueError(f'Invalid {key}.')
-        if key in ('port','thumbnail_max_pixels','max_source_pixels','max_source_bytes','max_video_bytes') and not isinstance(value, int):
+        if key in ('port','thumbnail_max_pixels','max_source_pixels','max_source_bytes','max_video_bytes',
+                   'pair_repeat_cooldown','image_repeat_cooldown','refinement_pool_size') and not isinstance(value, int):
             raise ValueError(f'{key} must be an integer.')
     result.setdefault('include_dirs', [])
     include = result['include_dirs']
@@ -155,6 +165,11 @@ class Ranker:
                 CREATE TABLE IF NOT EXISTS pairs (
                     id TEXT PRIMARY KEY, left_id INTEGER NOT NULL, right_id INTEGER NOT NULL,
                     winner TEXT, created REAL NOT NULL, voted REAL);
+                CREATE TABLE IF NOT EXISTS pair_skips (
+                    pair_id TEXT PRIMARY KEY, failed_ids TEXT NOT NULL, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS media_failures (
+                    image_id INTEGER PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+                    reason INTEGER NOT NULL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS rated_leaderboard ON images(active,rating DESC,id) WHERE matches>0;
                 CREATE TABLE IF NOT EXISTS stats (
@@ -300,7 +315,7 @@ class Ranker:
             pair = db.execute('SELECT * FROM pairs WHERE id=?', (current['value'],)).fetchone()
             if pair and pair['winner'] is None:
                 return pair
-        rows = db.execute('SELECT * FROM images INDEXED BY image_matches WHERE active=1 ORDER BY matches,id LIMIT 64').fetchall()
+        rows = db.execute(f'SELECT * FROM images INDEXED BY image_matches WHERE {ELIGIBLE_MEDIA} ORDER BY matches,id LIMIT 64').fetchall()
         if len(rows) < 2:
             return None
         # Serialize pair creation across connections/processes, then recheck.
@@ -310,39 +325,105 @@ class Ranker:
             pair = db.execute('SELECT * FROM pairs WHERE id=?', (current['value'],)).fetchone()
             if pair and pair['winner'] is None:
                 return pair
-        rows = db.execute('SELECT * FROM images INDEXED BY image_matches WHERE active=1 ORDER BY matches,id LIMIT 64').fetchall()
+        rows = db.execute(f'SELECT * FROM images INDEXED BY image_matches WHERE {ELIGIBLE_MEDIA} ORDER BY matches,id LIMIT 64').fetchall()
         if len(rows) < 2:
             return None
+        # rowid is persistent presentation order (votes, skips and viewed pairs).
+        # SQLite's built-in B-tree provides a bounded reverse scan without a sort.
+        cooldown = self.config['pair_repeat_cooldown']
+        image_cooldown = self.config['image_repeat_cooldown']
+        recent = db.execute('SELECT left_id,right_id FROM pairs ORDER BY rowid DESC LIMIT ?',
+                            (max(cooldown,image_cooldown),)).fetchall()
+        exposures = {}
+        for row in recent:
+            for key in ('left_id','right_id'):
+                exposures[row[key]] = exposures.get(row[key],0) + 1
         if random.random() < self.config['exploration_fraction']:
             minimum = rows[0]['matches']
-            first = db.execute('SELECT id FROM images INDEXED BY image_matches WHERE active=1 AND matches=? ORDER BY id LIMIT 1',
+            first = db.execute(f'SELECT id FROM images INDEXED BY image_matches WHERE {ELIGIBLE_MEDIA} AND matches=? ORDER BY id LIMIT 1',
                                (minimum,)).fetchone()['id']
-            last = db.execute('SELECT id FROM images INDEXED BY image_matches WHERE active=1 AND matches=? ORDER BY id DESC LIMIT 1',
+            last = db.execute(f'SELECT id FROM images INDEXED BY image_matches WHERE {ELIGIBLE_MEDIA} AND matches=? ORDER BY id DESC LIMIT 1',
                               (minimum,)).fetchone()['id']
             pivot = random.randint(first, last)
-            least = db.execute('SELECT * FROM images INDEXED BY image_matches WHERE active=1 AND matches=? AND id>=? ORDER BY id LIMIT 64',
+            least = db.execute(f'SELECT * FROM images INDEXED BY image_matches WHERE {ELIGIBLE_MEDIA} AND matches=? AND id>=? ORDER BY id LIMIT 64',
                                (minimum,pivot)).fetchall()
             if len(least) < 64:
-                least += db.execute('SELECT * FROM images INDEXED BY image_matches WHERE active=1 AND matches=? AND id<? ORDER BY id LIMIT ?',
+                least += db.execute(f'SELECT * FROM images INDEXED BY image_matches WHERE {ELIGIBLE_MEDIA} AND matches=? AND id<? ORDER BY id LIMIT ?',
                                     (minimum,pivot,64-len(least))).fetchall()
-            left = random.choice(least)
-            opponents = [row for row in least if row['id'] != left['id']]
+            underexposed = db.execute(f'''SELECT * FROM images INDEXED BY image_matches
+                WHERE {ELIGIBLE_MEDIA} ORDER BY matches,id LIMIT ?''',
+                (max(64,cooldown+2+2*image_cooldown),)).fetchall()
+            discovery = list({row['id']:row for row in least + underexposed}.values())
+            def exposure_cost(row):
+                return row['matches'], exposures.get(row['id'],0)
+            best = min(map(exposure_cost,discovery))
+            left = random.choice([row for row in discovery if exposure_cost(row) == best])
+            opponents = [row for row in discovery if row['id'] != left['id']]
+            best = min(map(exposure_cost,opponents))
+            opponents = [row for row in opponents if exposure_cost(row) == best]
+            # Keep discovery anchored on low exposure, but calibrate some new
+            # entries against a diverse rated pool rather than only other zeros.
+            if left['matches'] == 0 and random.random() < .35:
+                known = db.execute(f'''SELECT * FROM images INDEXED BY rated_leaderboard
+                    WHERE {ELIGIBLE_MEDIA} AND matches>0 ORDER BY rating DESC,id LIMIT ?''',
+                    (self.config['refinement_pool_size'],)).fetchall()
+                if known:
+                    opponents = known
             if not opponents:
                 opponents = [row for row in rows if row['id'] != left['id']]
             right = random.choice(opponents)
         else:
-            leaders = db.execute('SELECT * FROM images INDEXED BY image_rating WHERE active=1 ORDER BY rating DESC,id LIMIT 10').fetchall()
+            leaders = db.execute(f'SELECT * FROM images INDEXED BY image_rating WHERE {ELIGIBLE_MEDIA} ORDER BY rating DESC,id LIMIT ?',
+                                 (self.config['refinement_pool_size'],)).fetchall()
             left = random.choice(leaders)
-            above = db.execute('SELECT * FROM images INDEXED BY image_rating WHERE active=1 AND rating>=? ORDER BY rating,id DESC LIMIT 16', (left['rating'],)).fetchall()
-            below = db.execute('SELECT * FROM images INDEXED BY image_rating WHERE active=1 AND rating<=? ORDER BY rating DESC,id LIMIT 16', (left['rating'],)).fetchall()
+            above = db.execute(f'SELECT * FROM images INDEXED BY image_rating WHERE {ELIGIBLE_MEDIA} AND rating>=? ORDER BY rating,id DESC LIMIT 16', (left['rating'],)).fetchall()
+            below = db.execute(f'SELECT * FROM images INDEXED BY image_rating WHERE {ELIGIBLE_MEDIA} AND rating<=? ORDER BY rating DESC,id LIMIT 16', (left['rating'],)).fetchall()
             near = {row['id']:row for row in above + below if row['id'] != left['id']}
             opponents = sorted(near.values(), key=lambda row:(abs(row['rating']-left['rating']),row['id']))[:8]
             if not opponents:
                 opponents = [row for row in rows if row['id'] != left['id']]
             right = random.choice(opponents)
-        last = db.execute("SELECT value FROM meta WHERE key='last_pair'").fetchone()
-        if last and {str(left['id']), str(right['id'])} == set(last['value'].split(',')) and len(rows) >= 3:
-            right = random.choice([row for row in rows if row['id'] not in (left['id'], right['id'])])
+        forbidden = {frozenset((row['left_id'], row['right_id'])) for row in recent[:cooldown]}
+        resting = {row[key] for row in recent[:image_cooldown] for key in ('left_id','right_id')}
+        if (frozenset((left['id'],right['id'])) in forbidden
+                or left['id'] in resting or right['id'] in resting):
+            # H forbidden edges cannot exhaust H+2 eligible vertices; allow
+            # another 2*I vertices for images resting over I presentations.
+            # If fewer exist the prefix contains the entire eligible catalog.
+            alternatives = db.execute(f'''SELECT * FROM images INDEXED BY image_matches
+                WHERE {ELIGIBLE_MEDIA} ORDER BY matches,id LIMIT ?''',
+                (cooldown+2+2*image_cooldown,)).fetchall()
+            candidates = {row['id']:row for row in [left,right] + alternatives}
+            found = None
+            for keep in range(image_cooldown,-1,-1):
+                resting = {row[key] for row in recent[:keep] for key in ('left_id','right_id')}
+                available = [row for row in candidates.values() if row['id'] not in resting]
+                for first in available:
+                    for second in available:
+                        if first['id'] != second['id'] and frozenset((first['id'],second['id'])) not in forbidden:
+                            found = first, second
+                            break
+                    if found:
+                        break
+                if found:
+                    break
+            if found:
+                left, right = found
+            else:
+                # Only a genuinely exhausted eligible catalog reaches here.
+                # Prefer its least recently shown unordered edge, then the
+                # less repeated edge in the same bounded presentation history.
+                ages, repetitions = {}, {}
+                for age, row in enumerate(recent):
+                    edge = frozenset((row['left_id'],row['right_id']))
+                    ages.setdefault(edge, age)
+                    repetitions[edge] = repetitions.get(edge,0) + 1
+                pool = list(candidates.values())
+                def reuse_cost(pair):
+                    edge = frozenset((pair[0]['id'],pair[1]['id']))
+                    return (-ages.get(edge,len(recent)), repetitions.get(edge,0))
+                left, right = min(((first,second) for index, first in enumerate(pool)
+                                   for second in pool[index+1:]), key=reuse_cost)
         identity = uuid.uuid4().hex
         db.execute('INSERT INTO pairs(id,left_id,right_id,created) VALUES(?,?,?,?)',
                    (identity,left['id'],right['id'],time.time()))
@@ -444,12 +525,17 @@ class Ranker:
             timer.join()
 
     def _video_poster(self, path):
+        # ffprobe may repeat CSV rows for stream groups/programs. Select the
+        # actual top-level v:0 stream from structured output instead.
         dimensions = self._decoder_output([
             'ffprobe', '-v', 'error', '-protocol_whitelist', 'file', '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height', '-of', 'csv=p=0', str(path)], 1024, 10)
+            '-show_entries', 'stream=width,height', '-of', 'json', str(path)], 16384, 10)
         try:
-            width, height = (int(value) for value in dimensions.decode('ascii').strip().split(','))
-        except (ValueError, UnicodeError):
+            stream = json.loads(dimensions)['streams'][0]
+            width, height = stream['width'], stream['height']
+            if type(width) is not int or type(height) is not int:
+                raise ValueError('Invalid dimensions.')
+        except (ValueError, UnicodeError, KeyError, IndexError, TypeError):
             raise APIError(415, 'Video cannot be decoded.') from None
         if width <= 0 or height <= 0 or width * height > self.config['max_source_pixels']:
             raise APIError(413, 'Video frame exceeds safe decoding limit.')
@@ -463,6 +549,28 @@ class Ranker:
             '-threads', '2', '-c:v', 'mjpeg', '-q:v', '3', '-f', 'image2pipe', 'pipe:1'],
             output_limit, 20)
         return body, 'image/jpeg'
+
+    def _pillow_thumbnail(self, stream, *, fallback=False):
+        """Never relax Pillow's bomb limit or fully decode a large vips failure."""
+        assert Image is not None and ImageOps is not None
+        if fallback and os.fstat(stream.fileno()).st_size > 16 * 1024 * 1024:
+            raise APIError(413, 'Image exceeds safe fallback size limit.')
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(stream) as source:
+                if source.width * source.height > self.config['max_source_pixels']:
+                    raise APIError(413, 'Image exceeds safe decoding limit.')
+                if source.width * source.height > 40_000_000:
+                    if fallback:
+                        raise APIError(413, 'Image exceeds safe fallback pixel limit.')
+                    raise APIError(503, 'Large image previews require pyvips and libvips.')
+                maximum = self.config['thumbnail_max_pixels']
+                source.draft('RGB', (maximum,maximum))
+                source.thumbnail((maximum,maximum), Image.Resampling.LANCZOS)
+                frame = ImageOps.exif_transpose(source).convert('RGB')
+                output = io.BytesIO()
+                frame.save(output, format='JPEG', quality=85)
+                return output.getvalue(), 'image/jpeg'
 
     def image_bytes(self, image_id):
         if not isinstance(image_id,str) or not image_id.isascii() or not image_id.isdigit() or len(image_id) > 18:
@@ -492,34 +600,33 @@ class Ranker:
                         if not self._available(row):
                             raise APIError(410, 'Video source changed.')
                     elif pyvips is not None:
-                        source = pyvips.Source.new_from_descriptor(stream.fileno())
-                        header = pyvips.Image.new_from_source(source, '', access='sequential')
-                        if header.width * header.height > self.config['max_source_pixels']:
-                            raise APIError(413, 'Image exceeds safe decoding limit.')
-                        maximum = self.config['thumbnail_max_pixels']
-                        frame = pyvips.Image.thumbnail_source(source, maximum, height=maximum,
-                                                             size='down', fail_on='error')
-                        result = (frame.jpegsave_buffer(Q=85, background=[255,255,255]), 'image/jpeg')
-                        del frame, header, source
+                        source = header = frame = None
+                        try:
+                            source = pyvips.Source.new_from_descriptor(stream.fileno())
+                            header = pyvips.Image.new_from_source(source, '', access='sequential')
+                            if header.width * header.height > self.config['max_source_pixels']:
+                                raise APIError(413, 'Image exceeds safe decoding limit.')
+                            maximum = self.config['thumbnail_max_pixels']
+                            frame = pyvips.Image.thumbnail_source(source, maximum, height=maximum,
+                                                                 size='down', fail_on='error')
+                            result = (frame.jpegsave_buffer(Q=85, background=[255,255,255]), 'image/jpeg')
+                        except pyvips.Error as error:
+                            # Decoder traceback frames retain native Source objects on Windows.
+                            error.__traceback__ = None
+                            error.__context__ = None
+                            source = header = frame = None
+                            if Image is None:
+                                raise APIError(415, 'Image cannot be decoded.') from None
+                            stream.seek(0)
+                            result = self._pillow_thumbnail(stream, fallback=True)
+                        finally:
+                            source = header = frame = None
                     elif Image is None:
                         if info.st_size > 16 * 1024 * 1024:
                             raise APIError(413, 'Large images require Pillow thumbnails.')
                         return stream.read(), mimetypes.guess_type(path.name)[0] or 'application/octet-stream'
                     else:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter('error', Image.DecompressionBombWarning)
-                            with Image.open(stream) as source:
-                                if source.width * source.height > self.config['max_source_pixels']:
-                                    raise APIError(413, 'Image exceeds safe decoding limit.')
-                                if source.width * source.height > 40_000_000:
-                                    raise APIError(503, 'Large image previews require pyvips and libvips.')
-                                maximum = self.config['thumbnail_max_pixels']
-                                source.draft('RGB', (maximum,maximum))
-                                source.thumbnail((maximum,maximum), Image.Resampling.LANCZOS)
-                                frame = ImageOps.exif_transpose(source).convert('RGB')
-                                output = io.BytesIO()
-                                frame.save(output, format='JPEG', quality=85)
-                                result = (output.getvalue(),'image/jpeg')
+                        result = self._pillow_thumbnail(stream)
             except APIError:
                 raise
             except (Image.DecompressionBombError, Image.DecompressionBombWarning) if Image else ():
@@ -560,6 +667,55 @@ class Ranker:
                        (json.dumps({'pair_id': pair_id, 'winner': winner}),))
         return self.state()
 
+    def skip(self, pair_id, failed_ids):
+        if (not isinstance(pair_id,str) or not pair_id or not isinstance(failed_ids,list)
+                or len(failed_ids) > 2 or any(not isinstance(value,str) or not value for value in failed_ids)
+                or len(set(failed_ids)) != len(failed_ids)):
+            raise APIError(400, 'Expected pair_id string and up to two distinct failed_ids strings.')
+        with self.lock:
+            with self.connection() as db:
+                current = db.execute("SELECT value FROM meta WHERE key='pair'").fetchone()
+                pair = db.execute('SELECT * FROM pairs WHERE id=?', (pair_id,)).fetchone()
+                if not pair or pair['winner'] is not None or not current or current['value'] != pair_id:
+                    raise APIError(409, 'Stale or already answered pair.')
+                if any(image_id not in (str(pair['left_id']), str(pair['right_id'])) for image_id in failed_ids):
+                    raise APIError(400, 'Failed IDs must belong to the pending pair.')
+                reported = [db.execute('SELECT * FROM images WHERE id=?', (image_id,)).fetchone()
+                            for image_id in failed_ids]
+                members = [db.execute('SELECT * FROM images WHERE id=?', (image_id,)).fetchone()
+                           for image_id in (pair['left_id'], pair['right_id'])]
+            # Cached clients may still show a source that has disappeared since loading.
+            # Inactive sources are already excluded by scope; do not quarantine those.
+            confirmed = [(row,410) for row in members if row and row['active'] and not self._available(row)]
+            # Decode outside the write transaction. Browser errors alone are not evidence.
+            for image_id, row in zip(failed_ids, reported):
+                try:
+                    self.image_bytes(image_id)
+                except APIError as error:
+                    if row and error.status in (404,410,413,415):
+                        confirmed.append((row,error.status))
+            with self.connection() as db:
+                db.execute('BEGIN IMMEDIATE')
+                current = db.execute("SELECT value FROM meta WHERE key='pair'").fetchone()
+                pair = db.execute('SELECT * FROM pairs WHERE id=?', (pair_id,)).fetchone()
+                if not pair or pair['winner'] is not None or not current or current['value'] != pair_id:
+                    raise APIError(409, 'Stale or already answered pair.')
+                receipt = {'pair_id':pair_id, 'failed_ids':failed_ids}
+                created = time.time()
+                db.execute('INSERT INTO pair_skips(pair_id,failed_ids,created) VALUES(?,?,?)',
+                           (pair_id,json.dumps(failed_ids),created))
+                for row, reason in confirmed:
+                    db.execute('''INSERT INTO media_failures(image_id,size,mtime,reason,created)
+                        SELECT id,size,mtime,?,? FROM images WHERE id=? AND size=? AND mtime=? AND path=?
+                        ON CONFLICT(image_id) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,
+                        reason=excluded.reason,created=excluded.created''',
+                        (reason,created,row['id'],row['size'],row['mtime'],row['path']))
+                db.execute("DELETE FROM meta WHERE key='pair'")
+                db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_pair',?)",
+                           (f"{pair['left_id']},{pair['right_id']}",))
+                db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_skip',?)", (json.dumps(receipt),))
+        return self.state()
+
     def export_chunks(self):
         # A WAL snapshot and cursor iteration keep large exports bounded in memory.
         with self.connection() as db:
@@ -578,9 +734,16 @@ class Ranker:
                 item['left_id'], item['right_id'] = str(item['left_id']),str(item['right_id'])
                 yield (('' if first else ',') + json.dumps(item,ensure_ascii=True)).encode('utf-8')
                 first = False
+            yield b'],"skips":['
+            first = True
+            for row in db.execute('SELECT pair_id,failed_ids,created FROM pair_skips ORDER BY rowid'):
+                item = dict(row)
+                item['failed_ids'] = json.loads(item['failed_ids'])
+                yield (('' if first else ',') + json.dumps(item,ensure_ascii=True)).encode('utf-8')
+                first = False
             yield b']}'
 
-    def state(self):
+    def state(self, pair_id=None):
         with self.lock, self.connection() as db:
             pair = self._pair(db)
             if not db.in_transaction:
@@ -589,8 +752,16 @@ class Ranker:
             result = {'pair':None, 'top':[], 'stats':dict(counters, scanning=self.scanning)}
             receipt = db.execute("SELECT value FROM meta WHERE key='last_vote'").fetchone()
             result['last_vote'] = json.loads(receipt['value']) if receipt else None
+            receipt = db.execute("SELECT value FROM meta WHERE key='last_skip'").fetchone()
+            result['last_skip'] = json.loads(receipt['value']) if receipt else None
+            if pair_id is not None:
+                requested = db.execute('SELECT winner FROM pairs WHERE id=?', (pair_id,)).fetchone()
+                skipped = db.execute('SELECT 1 FROM pair_skips WHERE pair_id=?', (pair_id,)).fetchone()
+                status = ('voted' if requested and requested['winner'] is not None else
+                          'skipped' if skipped else 'pending' if requested else 'unknown')
+                result['pair_status'] = {'id':pair_id, 'status':status}
             result['top'] = [self._image(row) for row in db.execute(
-                'SELECT * FROM images INDEXED BY rated_leaderboard WHERE active=1 AND matches>0 ORDER BY rating DESC,id LIMIT 5')]
+                f'SELECT * FROM images INDEXED BY rated_leaderboard WHERE {ELIGIBLE_MEDIA} AND matches>0 ORDER BY rating DESC,id LIMIT 100')]
             if pair:
                 left = db.execute('SELECT * FROM images WHERE id=?', (pair['left_id'],)).fetchone()
                 right = db.execute('SELECT * FROM images WHERE id=?', (pair['right_id'],)).fetchone()
@@ -750,7 +921,7 @@ class Handler(BaseHTTPRequestHandler):
             route = urlsplit(self.path)
             if not self._authenticated(route.query):
                 raise APIError(401, 'Authentication required.')
-            if route.path != '/api/vote':
+            if route.path not in ('/api/vote', '/api/skip'):
                 raise APIError(404, 'Not found.')
             if self.headers.get('Transfer-Encoding'):
                 raise APIError(400, 'Transfer-Encoding is not supported.')
@@ -774,10 +945,15 @@ class Handler(BaseHTTPRequestHandler):
                                      parse_constant=self._invalid_constant)
             except (ValueError, UnicodeError, RecursionError):
                 raise APIError(400, 'Invalid JSON.') from None
-            if not isinstance(payload,dict) or set(payload) != {'pair_id','winner'} or any(
-                    not isinstance(payload[k],str) or not payload[k] for k in ('pair_id','winner')):
-                raise APIError(400, 'Expected pair_id and winner strings.')
-            self._json(200, self.server.ranker.vote(payload['pair_id'],payload['winner']))
+            if route.path == '/api/skip':
+                if not isinstance(payload,dict) or set(payload) != {'pair_id','failed_ids'}:
+                    raise APIError(400, 'Expected pair_id string and up to two distinct failed_ids strings.')
+                self._json(200, self.server.ranker.skip(payload['pair_id'],payload['failed_ids']))
+            else:
+                if not isinstance(payload,dict) or set(payload) != {'pair_id','winner'} or any(
+                        not isinstance(payload[k],str) or not payload[k] for k in ('pair_id','winner')):
+                    raise APIError(400, 'Expected pair_id and winner strings.')
+                self._json(200, self.server.ranker.vote(payload['pair_id'],payload['winner']))
         except APIError as error:
             self._json(error.status, {'error':str(error)})
 
@@ -900,7 +1076,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authenticated(route.query):
                 raise APIError(401, 'Authentication required.')
             if route.path == '/api/state':
-                self._json(200, self.server.ranker.state())
+                requested = parse_qs(route.query, keep_blank_values=True).get('pair_id', [])
+                if len(requested) > 1 or (requested and not requested[0]):
+                    raise APIError(400, 'Expected one nonempty pair_id.')
+                self._json(200, self.server.ranker.state(requested[0] if requested else None))
             elif route.path.startswith('/api/video/'):
                 self._video(route.path[len('/api/video/'):])
             elif route.path.startswith('/api/image/'):

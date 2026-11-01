@@ -4,7 +4,7 @@ A native CORSAIR iCUE widget for **XENEON EDGE** that learns your favorite local
 
 - Two media items stay on screen until you choose the better one.
 - Votes, Elo ratings, and the unanswered pair persist locally across restarts.
-- A provisional **Top 5** view shows your current rated favorites.
+- A provisional **Top 100** view shows your current rated favorites.
 - MP4/WebM playback is always muted; large images get monitor-sized streaming previews.
 - Native iCUE settings control visibility schedules, text, button size, image fit, colors, transparency, and video playback.
 
@@ -94,16 +94,40 @@ An imported widget is a snapshot. After changing widget code or connection defau
 
 Tap the better image or video. The vote is saved before the next pair appears; choices remain disabled until both items load. Duplicate taps are guarded, and a lost response can be reconciled against a durable vote receipt without saving the vote twice.
 
-Ratings use **Elo**, starting at 1000 with update factor 32. Selection mixes less-rated candidates with strong contenders. Top 5 contains **rated** items only and remains provisional while you explore the collection. It is not a claim that the entire archive's absolute best five have been found.
+Ratings use **Elo**, starting at 1000 with update factor 32. Selection mixes less-rated candidates with strong contenders. Top 100 contains **rated** items only and remains provisional while you explore the collection. It is not a claim that the entire archive's absolute best 100 have been found.
 
-If a pending source disappears, is corrupt, or exceeds its configured safety budget, the ranker reports it rather than silently replacing an unrated comparison. Restore the source or correct the relevant configuration to continue.
+Top 100 is paged **five items at a time**. Previous/Next controls browse the list without rating anything or changing the pending comparison. Only the current page's media is loaded, so the widget never plays 100 videos simultaneously. Existing native `top5` view settings remain compatible internally; the visible view is now Top 100.
+
+### Less repetition
+
+Selection uses persisted comparison history, not just the immediately previous pair. Exact unordered pairs have a configurable cooldown, recently shown individual images get a rest, and refinement considers a broader ranked pool instead of repeatedly comparing only the same leading images. The discovery preference defaults to `0.9` so the rest of a large archive continues to enter comparisons.
+
+Cooldowns are best-effort: a two-image or heavily filtered library must eventually repeat. They relax only when needed rather than leaving the ranker with no usable pair. Changing the selection policy never resets existing ratings/history or discards the unanswered pair.
+
+### Phone access
+
+See [PHONE.md](PHONE.md) for the optional one-time-code-paired browser gateway. The PC remains the authority for all votes and media; the core API stays loopback-only and its private key is never sent to the phone. LAN HTTP is unencrypted, so use trusted home Wi-Fi only and never port-forward it to the Internet. Network/firewall changes are opt-in, not part of normal setup or startup.
+
+### When an item will not load
+
+**Retry and Skip pair are always present for a visible comparison**, including while media is still loading. They do not depend on a browser error event, a status-text setting, or a successful image/video decode:
+
+1. **Retry** reloads the same comparison and checks the current server state. Use this after a temporary connection problem or after correcting the source.
+2. **Skip pair** is an explicit manual escape from a comparison, including one that has stalled without reporting an error. It records an abstention, **not a vote**, leaves Elo/match counts unchanged, and never deletes either source file.
+3. The companion checks reported failed items before excluding them. Confirmed unreadable/missing/out-of-budget sources stay out of future selection until a later scan detects their size or modification time changed. Healthy files are not excluded just because a browser failed to display them.
+
+Errors do not automatically advance a pair. A 15-second media-load watchdog marks stalled loads and attempts a real video-poster fallback; manual Skip is available before that deadline. JSON requests also have finite deadlines so a stalled save cannot disable recovery forever. Recovery controls work as icons when text is disabled. Lost skip responses are reconciled against a durable receipt, and web/iCUE clients can synchronize a pair already voted or skipped in another client without inventing a vote.
+
+The current widget is visibly named **Image Ranker 1.5** in iCUE and shows **v1.5.0** beside its title when title text is enabled. Build/import this version and replace older widget instances; updating the companion does not rewrite an already imported iCUE HTML snapshot. The 1.4 video preview probe reads the top-level JSON video stream rather than assuming FFprobe CSV has exactly one row, which matters for valid MP4 stream groups.
+
+Some archives contain a valid image with a misleading filename extension (for example, bitmap content under a `.jpg` name). If the primary streaming decoder cannot read a small, valid raster format, a bounded Pillow fallback reads the actual content. This does not rename, rewrite, or copy the original archive file.
 
 ### Images and videos
 
 - Raster image formats are configured separately from video formats.
 - Large-image previews use libvips streaming, not a full-size copy sent to the monitor. Originals remain unchanged.
 - GIFs currently use a still preview.
-- MP4/WebM videos can appear in comparisons and Top 5. They are **muted, volume zero, with no unmute controls**.
+- MP4/WebM videos can appear in comparisons and Top 100. They are **muted, volume zero, with no unmute controls**.
 - Playback loops by default and never advances a pair. **Play videos** and **Loop videos** can be disabled independently in iCUE.
 - Unsupported browser codecs can fall back to a clearly labeled real first-frame preview when FFmpeg can decode the source. Not every codec inside an MP4/WebM container is guaranteed to play in iCUE/Qt.
 - Hiding the widget, leaving the allowed schedule, switching views, or replacing a rated pair pauses playback and removes media sources. Polling preserves the current unanswered clip.
@@ -121,14 +145,14 @@ Scheduling is **off by default**. For weekdays from 8am to 3pm:
 
 Times use the computer's local clock in 24-hour `HH:MM` format. Start is inclusive, end exclusive. Overnight periods belong to their selected start day: Monday `22:00`–`02:00` includes early Tuesday. Equal start/end means all day on enabled days. Invalid times hide media rather than guessing.
 
-The schedule also applies to Top 5. It hides this widget's media, **not** the monitor backlight, iCUE wallpaper, or other widgets. Indexing may continue while the display is hidden.
+The schedule also applies to Top 100. It hides this widget's media, **not** the monitor backlight, iCUE wallpaper, or other widgets. Indexing may continue while the display is hidden.
 
 The on-screen **Hide/Show** button is a temporary session override. The native **Hide images** switch is the persisted setting. Browser preview does not persist native iCUE sidebar settings.
 
 ### Text, buttons, and personalization
 
-- **Show text** is a master switch. Individual switches control the title, status, Top 5 captions, button labels, and filenames. With text off, action buttons use icons.
-- **Button size** adjusts Top 5/Compare and Hide/Show controls from **44–144 px**, including labels/icons. Default is **72 px**; try **120 px** on a large slot. Image vote targets fill the remaining area automatically.
+- **Show text** is a master switch. Individual switches control the title, status, Top 100 captions, button labels, and filenames. With text off, action buttons use icons.
+- **Button size** adjusts Top 100/Compare and Hide/Show controls from **44–144 px**, including labels/icons. Default is **72 px**; try **120 px** on a large slot. Image vote targets fill the remaining area automatically.
 - **Image fit** selects contain or cover.
 - Background transparency applies without fading the media, text, or icons. Following iCUE's opacity mapping, `0` is transparent and `100` is opaque.
 - Enable iCUE's **Custom Style** if device-wide styling overrides the widget's chosen colors.
@@ -147,7 +171,10 @@ Stop the companion before editing `config.json`, then restart it. Native display
 | `extensions` | Raster image suffixes; do not put MP4/WebM here |
 | `excluded_dirs` | Folders excluded from scans; retain watcher/project exclusions |
 | `include_dirs` | Optional archive-relative folders; `[]` means the full archive |
-| `exploration_fraction` | `0`–`1`, default `0.65`; higher emphasizes less-rated candidates |
+| `exploration_fraction` | `0`–`1`, default `0.9`; higher emphasizes less-rated candidates |
+| `pair_repeat_cooldown` | Avoid an unordered pair from the recent `500` comparisons when alternatives exist |
+| `image_repeat_cooldown` | Rest individual images shown in the recent `12` comparisons when alternatives exist |
+| `refinement_pool_size` | Broader ranked refinement pool, default `100` instead of just the top ten |
 | `thumbnail_max_pixels` | Maximum preview side length, default `1200` |
 | `max_source_pixels` | Source image budget, default `500000000` |
 | `max_source_bytes` | Image source-file budget, default `268435456` (256 MiB) |

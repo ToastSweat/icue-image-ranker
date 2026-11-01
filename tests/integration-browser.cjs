@@ -32,7 +32,7 @@ const path = require('node:path');
   }
   await ready();
   const state=await (await fetch(api('state'))).json();
-  assert.equal(state.stats.votes,12); assert.equal(state.top.length,5);
+  assert.equal(state.stats.votes,12); assert.equal(state.top.length,Math.min(state.stats.rated,100));
   const duplicate=await fetch(api('vote'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pair_id:firstPair,winner:firstWinner})});
   assert.equal(duplicate.status,409);
   await page.getByTestId('top5-toggle').click();

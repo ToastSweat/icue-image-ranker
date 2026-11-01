@@ -4,12 +4,15 @@
   "private": true,
   "description": "Native iCUE image ranking widget with read-only local archive companion",
   "scripts": {
-    "test": "node tools/python.cjs -B tools/setup.py && node tools/python.cjs -B tools/setup.py --fixtures-only && node tools/python.cjs -B -W error::ResourceWarning -m unittest discover -s tests -p \"test_*.py\" && node --test tests/widget*.test.cjs",
+    "test": "node tools/python.cjs -B tools/setup.py && node tools/python.cjs -B tools/setup.py --fixtures-only && node tools/python.cjs -B -W error::ResourceWarning -m unittest discover -s tests -p \"test_*.py\" && node --test tests/*.test.cjs",
     "setup": "node tools/python.cjs -B tools/setup.py",
     "fixtures": "node tools/python.cjs -B tools/setup.py --fixtures-only",
     "validate": "node tools/build-widget.cjs --validate",
     "package": "node tools/build-widget.cjs",
-    "start": "node tools/python.cjs -B server.py --config config.json"
+    "start": "node tools/python.cjs -B server.py --config config.json",
+    "phone": "node tools/phone-launcher.cjs",
+    "phone:code": "node tools/phone-launcher.cjs --show-code",
+    "phone:stop": "node tools/phone-launcher.cjs --stop"
   },
   "devDependencies": {
     "icuewidget-cli": "^0.4.47",

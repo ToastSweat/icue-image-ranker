@@ -3,17 +3,17 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>tr('Image Ranker')</title>
+<title>tr('Image Ranker 1.5')</title>
 <link rel="stylesheet" href="style.css" />
 <link rel="icon" type="image/svg+xml" href="resources/icon.svg" />
-<meta name="x-icue-property" content="viewMode" data-label="tr('View mode')" data-type="combobox" data-default="'compare'" data-values="[{'key':'compare','value':tr('Compare')},{'key':'top5','value':tr('Top 5')}]" />
+<meta name="x-icue-property" content="viewMode" data-label="tr('View mode')" data-type="combobox" data-default="'compare'" data-values="[{'key':'compare','value':tr('Compare')},{'key':'top5','value':tr('Top 100')}]" />
 <meta name="x-icue-property" content="imageFit" data-label="tr('Image fit')" data-type="combobox" data-default="'contain'" data-values="[{'key':'contain','value':tr('Contain')},{'key':'cover','value':tr('Cover')}]" />
 <meta name="x-icue-property" content="showNames" data-label="tr('Show image names')" data-type="switch" data-default="false" />
 <meta name="x-icue-property" content="buttonSize" data-label="tr('Button size')" data-type="slider" data-default="72" data-min="44" data-max="144" data-step="4" data-unit-label="'px'" />
 <meta name="x-icue-property" content="showText" data-label="tr('Show text')" data-type="switch" data-default="true" />
 <meta name="x-icue-property" content="showTitle" data-label="tr('Show title')" data-type="switch" data-default="true" />
 <meta name="x-icue-property" content="showStatus" data-label="tr('Show status text')" data-type="switch" data-default="true" />
-<meta name="x-icue-property" content="showRankings" data-label="tr('Show Top 5 captions')" data-type="switch" data-default="true" />
+<meta name="x-icue-property" content="showRankings" data-label="tr('Show Top 100 captions')" data-type="switch" data-default="true" />
 <meta name="x-icue-property" content="showButtonLabels" data-label="tr('Show button labels')" data-type="switch" data-default="true" />
 <meta name="x-icue-property" content="playVideos" data-label="tr('Play videos (always muted)')" data-type="switch" data-default="true" />
 <meta name="x-icue-property" content="loopVideos" data-label="tr('Loop videos')" data-type="switch" data-default="true" />
@@ -38,11 +38,13 @@
 </head>
 <body>
 <div id="background"></div>
-<main id="root" data-testid="root">
-<header><div><strong data-tr="Image Ranker">Image Ranker</strong><span id="stats"></span></div><nav><button id="view" data-testid="top5-toggle" aria-label="Top 5"><svg hidden="hidden" aria-hidden="true" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="button-label">Top 5</span></button><button id="hide" data-testid="manual-hide" aria-label="Hide"><svg hidden="hidden" aria-hidden="true" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><span class="button-label">Hide</span></button></nav></header>
+<main id="root" data-testid="root" data-widget-version="1.5.0">
+<header><div><strong data-tr="Image Ranker">Image Ranker</strong><span class="build-version">v1.5.0</span><span id="stats"></span></div><nav><button id="view" data-testid="top5-toggle" aria-label="Top 100"><svg hidden="hidden" aria-hidden="true" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="button-label">Top 100</span></button><button id="hide" data-testid="manual-hide" aria-label="Hide"><svg hidden="hidden" aria-hidden="true" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><span class="button-label">Hide</span></button></nav></header>
 <p id="status" data-testid="status" role="status" aria-live="polite"></p>
+<div id="recovery" data-testid="recovery" role="group" aria-label="Media recovery" hidden="hidden"><button id="retry" data-testid="retry-pair" aria-label="Retry"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 8a8 8 0 1 0 1 8M20 3v6h-6"/></svg><span class="button-label">Retry</span></button><button id="skip" data-testid="skip-pair" aria-label="Skip pair"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 5 10 7-10 7ZM19 5v14"/></svg><span class="button-label">Skip pair</span></button></div>
 <section id="compare" data-testid="compare-cards" aria-label="Compare images"></section>
 <section id="top5" data-testid="top5" hidden></section>
+<div id="pager" data-testid="favorites-pager" role="group" aria-label="Favorites pages" hidden="hidden"><button id="previous" data-testid="previous-page" aria-label="Previous page"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 5-7 7 7 7"/></svg><span class="button-label">Previous</span></button><span id="page-status" data-testid="page-status" aria-live="polite"></span><button id="next" data-testid="next-page" aria-label="Next page"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 5 7 7-7 7"/></svg><span class="button-label">Next</span></button></div>
 </main>
 <script src="defaults.js"></script>
 <script src="runtime.js"></script>

@@ -287,6 +287,24 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(self.request(server, 'HEAD', route + '?token=' + TOKEN,
                                      {'Host':'evil.example'})[0], 403)
 
+    def test_video_poster_uses_top_level_json_stream_not_duplicated_stream_groups(self):
+        path = self.video()
+        ranker = self.ranker()
+        original = ranker._decoder_output
+        metadata = {'stream_groups': [{'streams': [{'width': 160, 'height': 90}]}],
+                    'programs': [], 'streams': [{'width': 160, 'height': 90}]}
+        def grouped(command, limit, timeout):
+            if command[0] == 'ffprobe':
+                self.assertEqual(command[command.index('-of') + 1], 'json')
+                return json.dumps(metadata).encode()
+            return original(command, limit, timeout)
+        with patch.object(ranker, '_decoder_output', side_effect=grouped):
+            body, mime = ranker.image_bytes(self.image_id(ranker, path.name))
+        self.assertEqual(mime, 'image/jpeg')
+        with Image.open(io.BytesIO(body)) as preview:
+            self.assertLessEqual(max(preview.size), 128)
+            self.assertAlmostEqual(preview.width / preview.height, 160 / 90, delta=.03)
+
     def test_video_image_endpoint_returns_real_first_frame_jpeg_without_source_writes(self):
         paths = [self.video(), self.video('clip.webm')]
         original = [self.digest(path) for path in paths]

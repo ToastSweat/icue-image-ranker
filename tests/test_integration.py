@@ -41,7 +41,7 @@ class IntegrationTests(unittest.TestCase):
                 print(result.stdout.strip())
                 state = ranker.state()
                 self.assertEqual(state['stats']['votes'], 12)
-                self.assertEqual(len(state['top']), 5)
+                self.assertEqual(len(state['top']), min(state['stats']['rated'], 100))
                 restored = backend.Ranker(config, project)
                 try:
                     self.assertEqual(restored.state(), state)
